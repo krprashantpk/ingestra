@@ -1,0 +1,30 @@
+[project]
+name = "ingestra"
+version = "0.1.0"
+description = "A Python library for data ingestion."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.10",
+    "aioodbc>=0.5,<1",
+    "azure-ai-contentunderstanding>=1.2.0b3,<2",
+    "azure-core>=1.37.0",
+    "azure-identity>=1.19.0",
+    "azure-search-documents>=11.6,<12",
+    "openai>=2,<3",
+    "sqlalchemy[asyncio]>=2.0.23,<3",
+    "tiktoken>=0.8,<1",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.5,<0.11"]
+build-backend = "uv_build"
+
+[dependency-groups]
+notebooks = [
+    "ipykernel>=7.4.0",
+    "ipywidgets>=8.1.9",
+]
+samples = [
+    "azure-functions>=1.24,<2"
+]

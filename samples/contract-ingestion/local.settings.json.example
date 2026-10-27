@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "INGEST_CONTAINER": "documents",
+    "IngestStorage__blobServiceUri": "https://<storage-account>.blob.core.windows.net",
+    "IngestStorage__queueServiceUri": "https://<storage-account>.queue.core.windows.net",
+    "AZURE_CONTENT_UNDERSTANDING_ENDPOINT": "https://<ai-account>.services.ai.azure.com",
+    "AZURE_CONTENT_UNDERSTANDING_ANALYZER": "prebuilt-documentSearch",
+    "AZURE_CONTENT_UNDERSTANDING_API_VERSION": "2025-11-01",
+    "AZURE_OPENAI_ENDPOINT": "https://<ai-account>.openai.azure.com",
+    "AZURE_OPENAI_EMBEDDING_DEPLOYMENT": "text-embedding-3-small",
+    "AZURE_SQL_SERVER": "<sql-server>.database.windows.net",
+    "AZURE_SQL_DATABASE": "ingestra"
+  }
+}
