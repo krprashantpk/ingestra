@@ -20,10 +20,10 @@ flowchart LR
     Chunker[BaseChunker] --> Pipeline
     Embeddings[BaseEmbeddings] --> Pipeline
     Pipeline --> Chunks[Embedded chunks]
-    Chunks --> Result[ChunkResult via ingest]
-    Metadata --> Result
-    Chunks -->|ingest only| MarkdownStore[BaseMarkdownStore.store_markdown]
-    Metadata -->|ingest only| MetadataStore[BaseMetadataStore.store_metadata]
+    Chunks --> IngestChunks[Pipeline.ingest_chunks]
+    Metadata --> IngestMetadata[Pipeline.ingest_metadata]
+    IngestChunks --> MarkdownStore[BaseMarkdownStore.store_markdown]
+    IngestMetadata --> MetadataStore[BaseMetadataStore.store_metadata]
     MarkdownStore --> ChunkSearch[Azure AI Search index]
     MarkdownStore --> ChunkSQL[Azure SQL table with native vectors]
     MetadataStore --> MetadataSearch[Azure AI Search index]
@@ -51,11 +51,12 @@ use SQL, or either role may use a different backend from the other.
 - [Pipeline](src/ingestra/pipeline.py): preserves chunk order and associates each
   chunk with its exact embedding input, vector, and source page numbers. `convert`
   returns Markdown and metadata; `chunk` accepts Markdown and returns a list of
-  embedded chunks without persistence. `ingest` composes both methods, combines
-  their outputs in `ChunkResult`, and invokes independently configured stores.
+  embedded chunks without persistence. Applications compose these methods with
+  `ingest_metadata` and `ingest_chunks` to invoke independently configured stores.
 - [Shared models](src/ingestra/types.py): defines `EmbeddedChunk` and `ChunkResult`
   independently of processing and storage. The pipeline re-exports both models
-  to preserve existing imports and avoid circular dependencies. `EmbeddedChunk`
+  to preserve existing imports and avoid circular dependencies. Applications can
+  construct `ChunkResult` to group chunks and conversion metadata. `EmbeddedChunk`
   requires embedding text and a vector, while its source page tuple defaults to
   empty; it does not inherit the chunker's optional pre-embedding fields.
 - [Markdown storage contract](src/ingestra/store/markdown/base.py):
@@ -113,19 +114,18 @@ data through the matching store. Each requires only its own store and mapper,
 returns `None`, and never runs conversion, chunking, or embedding. Empty chunk
 sequences perform no provider writes; empty metadata still produces a document.
 
-`ingest(data, *, chunk_mapper=None, metadata_mapper=None)` requires at least one
-configured store and a callable mapper for every configured role. A mapper without
-a matching store is rejected. These configuration checks run before processing.
-The operation then awaits `convert(data)`, `chunk(markdown)`,
-`ingest_metadata`, and `ingest_chunks` for nonempty chunks in that order,
-returning the unchanged processing result after all
-configured writes finish. Empty chunks skip embedding and Markdown storage,
-while configured metadata storage still runs.
+There is no combined ingestion method. Applications choose which processing and
+persistence methods to call, their order, and whether to group outputs in
+`ChunkResult`. A typical workflow awaits `convert(data)`, `chunk(markdown)`,
+`ingest_metadata`, and `ingest_chunks` in that order. Empty chunks skip embedding
+and Markdown writes; metadata is stored only when the application requests it.
+Store and mapper configuration is checked separately by each persistence method,
+not before the application's complete processing workflow.
 
-Component and storage errors propagate unchanged. No writes occur if processing
-fails, and a metadata failure prevents the Markdown write. A later Markdown
-failure can leave metadata already persisted. Mapping validation remains per
-store call, not across the complete ingestion.
+Component and storage errors propagate unchanged. In the sequence above, no
+writes occur if processing fails, and a metadata failure prevents the Markdown
+write. A later Markdown failure can leave metadata already persisted. Mapping
+validation remains per store call, not across the complete ingestion.
 
 Store callbacks are supplied per invocation and are not retained by the pipeline.
 Stores, components, clients, SQL connections, and transactions remain caller-owned.
@@ -152,8 +152,8 @@ Markdown mapping fails. Empty chunk sequences do not invoke the provider, while
 empty metadata dictionaries can still be mapped and stored.
 
 There is no combined `BaseStore`. Applications may invoke stores directly or use
-the pipeline's explicit `ingest` orchestration for metadata-first writes. Stable
-keys, retries, and obsolete-chunk deletion remain application responsibilities.
+the pipeline's independent persistence methods. Write order, stable keys, retries,
+and obsolete-chunk deletion remain application responsibilities.
 Successful Search calls finish their uploads; successful SQL calls finish their
 statements within the caller's transaction, which still needs to commit.
 
@@ -212,10 +212,10 @@ succeed, even when the SQL portion later rolls back.
 
 ## Verification
 
-Standard-library `unittest` tests exercise processing-only and persisted pipeline
-operations, independent storage roles, write ordering, shared mapping, all four
-backend combinations through ingestion, SDK serialization through a recording
-transport, SQL Server dialect compilation, native vector processing, and failures.
-No live Azure resources are required by the automated suite; live connectivity,
-server feature support, and deployment permissions require separate integration
-verification.
+Standard-library `unittest` tests cover processing, independent persistence roles,
+shared mapping, SDK serialization through a recording transport, SQL Server
+dialect compilation, native vector processing, and failures. Some legacy pipeline
+and backend-combination tests still call the removed combined ingestion method;
+see the [testing notes](docs/guide.md#tests) for the known failure.
+No live Azure resources are required by these tests; live connectivity, server
+feature support, and deployment permissions require separate integration verification.

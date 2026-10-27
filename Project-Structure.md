@@ -18,7 +18,7 @@ description: Repository layout, module responsibilities, and sample application.
 
 ## Overview
 
-Ingestra is a Python 3.12+ library that turns document bytes into Markdown, splits that Markdown into token-bounded chunks, generates embeddings, and optionally persists chunks and extracted metadata. The repository uses a source layout: reusable package code lives under `src/ingestra`, library tests live under `tests`, and a deployable application lives under `samples/contract-ingestion`.
+Ingestra is a Python 3.12+ library that turns document bytes into Markdown, splits that Markdown into chunks near a token-size goal, generates embeddings, and optionally persists chunks and extracted metadata. The repository uses a source layout: reusable package code lives under `src/ingestra`, library tests live under `tests`, and a deployable application lives under `samples/contract-ingestion`.
 
 The reusable library defines component contracts and orchestration. Applications supply configured clients, storage schemas, mapping functions, authentication, and resource lifetimes. The sample demonstrates those application responsibilities with Azure Functions and Azure SQL.
 
@@ -36,6 +36,12 @@ ingestra/
 |-- pyproject.toml
 |-- README.md
 |-- uv.lock
+|-- docs/
+|   `-- guide.md
+|-- exeperiment/
+|   `-- chunkers/
+|       |-- markdown_chunking.ipynb
+|       `-- samples/
 |-- src/
 |   `-- ingestra/
 |       |-- __init__.py
@@ -76,7 +82,9 @@ ingestra/
         |-- README.md
         |-- infra/
         |   |-- main.bicep
-        |   `-- events.bicep
+        |   |-- events.bicep
+        |   |-- foundry-access.bicep
+        |   `-- monitoring.bicep
         |-- services/
         |   |-- __init__.py
         |   `-- ingestion.py
@@ -97,6 +105,8 @@ ingestra/
 * [uv.lock](uv.lock) records resolved dependency versions for reproducible environments managed with `uv`.
 * [.gitignore](.gitignore) defines files and directories excluded from Git.
 * [.github](.github/) holds repository-level GitHub configuration and supporting artifacts, separate from the importable package.
+* [docs/guide.md](docs/guide.md) contains configuration, usage examples, component contracts, and local development instructions.
+* [exeperiment/chunkers](exeperiment/chunkers/) contains the interactive Markdown chunking notebook and its source samples.
 
 The root `.venv` is a local environment, not source code. Use `uv sync` to synchronize project dependencies and `uv run` to execute tools in that environment.
 
@@ -116,7 +126,7 @@ The root `.venv` is a local environment, not source code. Use `uv sync` to synch
 
 `Pipeline.ingest_chunks(chunks, *, chunk_mapper)` and `Pipeline.ingest_metadata(metadata, *, metadata_mapper)` persist prepared data independently and return `None`. Each method requires only its matching store and callable mapper, without running conversion, chunking, or embedding. Empty chunk sequences perform no provider writes; empty metadata still produces a mapped document.
 
-`Pipeline.ingest(data, ...)` calls `convert(data)` and then `chunk(markdown)`, combining chunks and conversion metadata into `ChunkResult`. It requires at least one store and a callable mapper for each configured storage role. Configuration is checked before processing. It delegates to `ingest_metadata` first, followed by `ingest_chunks` for nonempty chunks, and returns the unmapped processing result after the writes succeed.
+Applications compose these methods explicitly: call `convert(data)` and `chunk(markdown)`, then the persistence methods for the configured roles. Write ordering and validation across the complete workflow belong to the application. Applications can construct `ChunkResult(chunks, metadata)` to group processing outputs; the pipeline does not provide a combined ingestion method.
 
 The pipeline does not create clients, provision storage, commit transactions, or guarantee atomicity across storage providers. Component errors propagate; an earlier write may already have succeeded when a later write fails.
 
@@ -125,7 +135,7 @@ The pipeline does not create clients, provision storage, commit transactions, or
 [src/ingestra/types.py](src/ingestra/types.py) contains two frozen dataclasses shared by processing and persistence:
 
 * `EmbeddedChunk` contains exact source text in `original_text`, the actual embedding input in `embedding_text`, a numeric `embedding`, and a tuple of source `page_numbers`.
-* `ChunkResult` contains embedded chunks in source order and the document-level metadata returned by conversion.
+* `ChunkResult` lets applications group embedded chunks in source order with the document-level metadata returned by conversion.
 
 These models are independent of any storage schema. Their dictionaries and lists are not deeply immutable despite the frozen dataclass declarations.
 
@@ -211,7 +221,7 @@ Uploads are grouped into batches of at most 1,000 documents. Every indexing resu
 
 [samples/contract-ingestion/services/ingestion.py](samples/contract-ingestion/services/ingestion.py) owns the sample ingestion workflow. `validate_file()` rejects empty bodies, invalid filenames, and uploads larger than 20 MiB. `ingest_file()` derives a stable document ID from the source identity and creates ordered chunk IDs, provenance fields, and storage mappers.
 
-The service creates and closes Azure clients, acquires an Entra token for SQL, and configures the pipeline with a 2,048-token chunk limit and 1,536-dimensional embeddings. Separate `AzureSQLStore` instances write document metadata and chunks through the same transaction. Empty extraction raises `EmptyExtractionError` to roll back writes. Successful reingestion deletes obsolete trailing chunks before commit, so a shorter replacement does not leave stale rows.
+The service creates and closes Azure clients, acquires an Entra token for SQL, and configures the pipeline with a 2,048-token chunk-size goal and 1,536-dimensional embeddings. It calls `convert` and `chunk`, then `ingest_metadata` and `ingest_chunks`. Separate `AzureSQLStore` instances write document metadata and chunks through the same transaction. Empty extraction raises `EmptyExtractionError` to roll back writes. Successful reingestion deletes obsolete trailing chunks before commit, so a shorter replacement does not leave stale rows.
 
 #### Database and Bootstrap Utilities
 
@@ -219,7 +229,7 @@ The service creates and closes Azure clients, acquires an Entra token for SQL, a
 
 [samples/contract-ingestion/utilities/database.py](samples/contract-ingestion/utilities/database.py) defines shared SQLAlchemy metadata and two tables: `dbo.document_metadata` for document identity, provenance, and extracted fields; and `dbo.document_chunks` for ordered text, page numbers, and native vectors. A foreign key links chunks to their document. `create_sql_engine()` builds an encrypted `mssql+aioodbc` connection using Microsoft ODBC Driver 18, a binary-packed Entra access token, and `NullPool`. The caller owns engine disposal.
 
-[samples/contract-ingestion/utilities/bootstrap.py](samples/contract-ingestion/utilities/bootstrap.py) provides a command-line initialization step. It uses `AzureCliCredential` to configure Content Understanding model defaults, create the SQL tables, and create or validate the Function identity's SQL user. It grants table-level `SELECT`, `INSERT`, `UPDATE`, and `DELETE` permissions and retries AI defaults configuration when role assignment propagation causes temporary authorization failures.
+[samples/contract-ingestion/utilities/bootstrap.py](samples/contract-ingestion/utilities/bootstrap.py) provides a command-line initialization step. It uses `AzureCliCredential` to create the SQL tables and create or validate the Function identity's SQL user. It grants table-level `SELECT`, `INSERT`, `UPDATE`, and `DELETE` permissions. It does not configure AI services, model defaults, or analyzers.
 
 #### Host Configuration and Deployment
 
@@ -227,9 +237,10 @@ The service creates and closes Azure clients, acquires an Entra token for SQL, a
 * [samples/contract-ingestion/local.settings.json.example](samples/contract-ingestion/local.settings.json.example) provides a local application settings template rather than checked-in secrets.
 * [samples/contract-ingestion/.funcignore](samples/contract-ingestion/.funcignore) excludes development files from Function publishing.
 * [samples/contract-ingestion/Deploy-Sample.ps1](samples/contract-ingestion/Deploy-Sample.ps1) coordinates dependency preparation, wheel and ZIP packaging, infrastructure deployment, data-plane bootstrap, Function publishing, and event wiring.
-* [samples/contract-ingestion/infra/main.bicep](samples/contract-ingestion/infra/main.bicep) declares the Function application and hosting plan, managed identity, Storage, Azure SQL, AI account and model deployments, role assignments, and monitoring.
+* [samples/contract-ingestion/infra/main.bicep](samples/contract-ingestion/infra/main.bicep) declares the Function application and hosting plan, managed identity, Storage, Azure SQL, and storage role assignments. It invokes modules for runtime access to an existing Foundry account and workspace-based monitoring; it does not provision AI accounts or model deployments.
+* [samples/contract-ingestion/infra/foundry-access.bicep](samples/contract-ingestion/infra/foundry-access.bicep) grants the Function identity account-scoped Content Understanding Reader and OpenAI User roles on the existing Foundry account.
+* [samples/contract-ingestion/infra/monitoring.bicep](samples/contract-ingestion/infra/monitoring.bicep) creates a Log Analytics workspace with 30-day retention and workspace-based Application Insights, supplying the Function's monitoring connection string.
 * [samples/contract-ingestion/infra/events.bicep](samples/contract-ingestion/infra/events.bicep) creates the Storage Event Grid system topic and event subscription used for blob-trigger delivery after the application is published.
 * [samples/contract-ingestion/README.md](samples/contract-ingestion/README.md) contains deployment prerequisites, settings, invocation examples, local development steps, and operational limitations.
 
-> [!NOTE]
-> The dependency group declared in [pyproject.toml](pyproject.toml) is `samples`. The sample README and deployment script currently reference `sample` instead. That naming mismatch must be resolved before following those commands unchanged. The declared group can be installed with `uv sync --group samples`.
+Install the sample dependency group with `uv sync --group samples` from the repository root.

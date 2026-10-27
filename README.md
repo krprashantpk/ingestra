@@ -44,7 +44,7 @@ Git must be installed. You can pin the dependency by appending
 
 ## Quick start
 
-Already have Markdown? Split it into token-bounded chunks without an Azure
+Already have Markdown? Split it near a token-size goal without an Azure
 account:
 
 ```python
@@ -61,8 +61,9 @@ for chunk in chunks:
 ```
 
 Each chunk includes its original text, embedding-ready text, token count, and
-source page numbers when available. The default `tiktoken` tokenizer may
-download its encoding data on first use.
+source page numbers when available. The token size is a soft goal, not a hard
+ceiling; natural boundaries and structural context can take chunks above it.
+The default `tiktoken` tokenizer may download its encoding data on first use.
 
 ### Build an ingestion pipeline
 
@@ -85,8 +86,8 @@ without invoking the converter. You can also pass existing Markdown directly to
 `chunk()`. Neither method writes to storage. With configured stores, call
 `ingest_chunks(chunks, chunk_mapper=...)` or
 `ingest_metadata(metadata, metadata_mapper=...)` to persist either output
-independently. Use `ingest(document_bytes, ...)` with mapping callbacks to
-convert, chunk, embed, and persist in one operation.
+independently. Compose these processing and persistence calls explicitly in
+your application for end-to-end ingestion.
 
 See the [complete Azure example](docs/guide.md#convert-and-embed-a-document)
 for client setup and authentication, and the

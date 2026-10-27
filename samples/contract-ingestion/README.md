@@ -21,9 +21,9 @@ The service calls `convert(data)` for Markdown and metadata, then
 roles in one transaction.
 
 The sample provisions Functions, Storage, and Azure SQL, plus the required
-hosting plan and managed identity. It does not create a Foundry account,
-project, model deployment, or monitoring workspace. AI services are supplied
-from your existing Foundry setup.
+hosting plan, managed identity, Log Analytics workspace, and workspace-based
+Application Insights. It does not create a Foundry account, project, or model
+deployment. AI services are supplied from your existing Foundry setup.
 
 ```text
 HTTP file body ----+
@@ -45,6 +45,7 @@ Blob upload -------+                                             |
 | [utilities/bootstrap.py](utilities/bootstrap.py)          | SQL table setup and SQL permissions                   |
 | [main.bicep](infra/main.bicep)                           | Functions, Storage, SQL, hosting plan, and identity    |
 | [foundry-access.bicep](infra/foundry-access.bicep)         | Account-scoped runtime roles on existing Foundry     |
+| [monitoring.bicep](infra/monitoring.bicep)               | Log Analytics and workspace-based Application Insights |
 | [events.bicep](infra/events.bicep)                       | Post-publish Blob event subscription                  |
 | [Deploy-Sample.ps1](Deploy-Sample.ps1)                   | Build, provision, initialize, publish, and wire events |
 | [local.settings.json.example](local.settings.json.example) | Nonsecret local configuration template              |
@@ -95,7 +96,8 @@ by this document-focused sample.
 * Permission to deploy the RBAC module in the existing Foundry resource group
   (`rg-agents` by default), and to create role assignments on its Foundry account
 * Registered resource providers: `Microsoft.Web`, `Microsoft.Storage`,
-  `Microsoft.Sql`, `Microsoft.ManagedIdentity`, and `Microsoft.EventGrid`
+  `Microsoft.Sql`, `Microsoft.ManagedIdentity`, `Microsoft.EventGrid`,
+  `Microsoft.OperationalInsights`, and `Microsoft.Insights`
 * A region supporting both Flex Consumption and SQL provisioning for your subscription
 * When publishing code, existing Content Understanding and Azure OpenAI services,
   with their analyzers, model deployments, and permissions already configured
@@ -186,8 +188,9 @@ The full deployment script performs these steps:
 1. Synchronize the root `.venv` using the root `samples` dependency group,
    preserving other packages already installed in that environment.
 1. Deploy a Linux Python 3.12 Flex Consumption Function App, private blob
-   containers, Azure SQL, the hosting plan, and a managed identity, and grant
-   that identity runtime access on the existing Foundry account.
+  containers, Azure SQL, the hosting plan, a managed identity, a Log Analytics
+  workspace with 30-day retention, and workspace-based Application Insights.
+  Grant that identity runtime access on the existing Foundry account.
 1. Use the signed-in user as SQL's Microsoft Entra administrator, temporarily
    allow your public IPv4 address, and initialize SQL tables.
 1. Create a SQL user for the Function's managed identity with only

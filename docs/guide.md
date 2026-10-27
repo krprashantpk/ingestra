@@ -20,9 +20,11 @@ Document bytes --> Converter --> Markdown + metadata
                                      |
                              Embedding provider
                                      |
-                                ChunkResult
+                    Embedded chunks
                                      |
-                    Optional chunk and metadata stores
+                  Optional chunk store
+
+Document metadata --> Optional metadata store
 ```
 
 You choose and configure each component. Use the complete pipeline or call a
@@ -205,8 +207,9 @@ source page numbers. No storage writes occur. The built-in converter retains
 only the first content item returned by the analyzer.
 
 To persist the result, configure one or both [stores](#stores), supply the
-corresponding mapping callbacks, and call `await pipeline.ingest(...)` instead
-of the separate conversion and chunking calls. Indexes and tables must already exist, vector
+corresponding mapping callbacks, and call `await pipeline.ingest_metadata(...)`
+and `await pipeline.ingest_chunks(...)` for the configured roles after processing.
+Indexes and tables must already exist, vector
 dimensions must match the embedding model, and SQL writes need a caller-owned
 transaction. See [ingest and store](#ingest-and-store) for the write contract
 and [the Functions sample](../samples/contract-ingestion/README.md) for a complete
@@ -558,7 +561,7 @@ from ingestra.pipeline import EmbeddedChunk, Pipeline
 
 
 async def chunk_document(data: bytes, converter: BaseConverter, embeddings: BaseEmbeddings) -> list[EmbeddedChunk]:
-  pipeline = Pipeline(converter=converter, chunker=MarkdownTokenChunker(), embeddings=embeddings)
+    pipeline = Pipeline(converter=converter, chunker=MarkdownTokenChunker(), embeddings=embeddings)
     markdown, _ = await pipeline.convert(data)
     return await pipeline.chunk(markdown)
 ```
@@ -612,30 +615,34 @@ mapper errors propagate unchanged. Empty chunk sequences perform no provider
 writes; empty metadata still produces a mapped document. Calling these methods
 separately leaves write ordering to the caller.
 
-Use `ingest(data, *, chunk_mapper=None, metadata_mapper=None)` to process and
-persist in one operation. With caller-configured components, stores, and mapping callbacks:
+Applications compose processing and persistence explicitly. With both stores
+configured, write metadata before chunks as follows:
 
 ```python
 pipeline = Pipeline(converter, MarkdownTokenChunker(), embeddings, markdown_store=markdown_store, metadata_store=metadata_store)
-result = await pipeline.ingest(data, chunk_mapper=map_chunk, metadata_mapper=map_metadata)
+markdown, metadata = await pipeline.convert(data)
+chunks = await pipeline.chunk(markdown)
+await pipeline.ingest_metadata(metadata, metadata_mapper=map_metadata)
+await pipeline.ingest_chunks(chunks, chunk_mapper=map_chunk)
 ```
 
 - `convert(data)` and `chunk(markdown)` remain **side-effect-free with respect to storage**,
   even when stores are configured. Neither method needs storage mappers.
-- `ingest` requires at least one configured store. Only the mapper for each
-  configured role is required; omit both the store and mapper for an unused role.
-  No stores or a mapper without a matching store raises `ValueError`. Missing or
-  non-callable required mappers raise `TypeError`, before conversion or writes.
-- Ingestion completes conversion, chunking, and embedding before any writes,
-  then awaits `ingest_metadata` followed by `ingest_chunks`. Empty chunk lists
-  skip both embedding and Markdown storage but still store configured metadata.
-- The returned `ChunkResult` combines the embedded chunk list with conversion
-  metadata, not mapped storage dictionaries. Mappers are supplied per call, so each document
-  can capture its own identifiers and source-position counter.
+- For a single storage role, configure only that store and call only its matching
+  persistence method. The pipeline has no combined ingestion method and does not
+  automatically invoke either store after processing.
+- The example completes conversion, chunking, and embedding before writing
+  metadata and then chunks. Empty chunk lists skip embedding and Markdown writes;
+  metadata persistence remains an explicit application choice.
+- Applications can construct `ChunkResult(chunks, metadata)` to group processing
+  outputs. Persistence methods return `None`, not mapped storage dictionaries.
+  Mappers are supplied per call, so each document can capture its own identifiers
+  and source-position counter.
 - Component, mapper, and storage errors propagate unchanged. A metadata failure
-  prevents the Markdown write; a later Markdown failure can leave metadata
-  already written. Ingestion does not add retries, compensation, or transactions
-  across providers. It never commits SQL transactions or closes caller-owned clients.
+  in this sequence prevents the Markdown write; a later Markdown failure can leave
+  metadata already written. The pipeline does not add retries, compensation, or
+  transactions across providers. It never commits SQL transactions or closes
+  caller-owned clients.
 
 Shared result models now live in [types.py](../src/ingestra/types.py) to keep storage
 contracts independent of pipeline orchestration. Existing imports of
@@ -662,9 +669,9 @@ table**, so select the provider for each responsibility independently:
 | Azure AI Search                | Azure AI Search   |
 | Azure SQL                      | Azure SQL         |
 
-Use the pipeline's `ingest` operation to invoke configured stores. For example,
-this helper captures stable document identifiers and a fresh position counter
-for each ingestion call:
+Compose the pipeline's processing and persistence methods to invoke configured
+stores. This application helper captures stable document identifiers and a fresh
+position counter for each document:
 
 ```python
 from itertools import count
@@ -696,11 +703,16 @@ async def ingest_document(data: bytes, document_id: str, pipeline: Pipeline) -> 
             "title": metadata.get("title"),
         }
 
-    return await pipeline.ingest(data, chunk_mapper=map_chunk, metadata_mapper=map_metadata)
+    markdown, metadata = await pipeline.convert(data)
+    chunks = await pipeline.chunk(markdown)
+    await pipeline.ingest_metadata(metadata, metadata_mapper=map_metadata)
+    await pipeline.ingest_chunks(chunks, chunk_mapper=map_chunk)
+    return ChunkResult(chunks, metadata)
 ```
 
 The helper above expects both roles to be configured. To use a single role,
-provide only its mapper to `ingest`. Stores can also be called directly with
+  omit the unused persistence call and configure only the matching store and mapper.
+  Stores can also be called directly with
 `ChunkResult.chunks` and `ChunkResult.metadata` when separate persistence is needed.
 
 Mappers are required synchronous callbacks returning complete dictionaries,
@@ -1024,8 +1036,10 @@ services; Azurite does not replace document conversion, embeddings, or SQL.
 
 The [contract-ingestion sample](../samples/contract-ingestion/README.md) is a
 complete application with a Function-key-protected HTTP endpoint and an
-Event Grid Blob trigger. Both use `Pipeline.ingest()` to persist chunks,
-native embeddings, page numbers, and metadata in Azure SQL.
+Event Grid Blob trigger. Both call the shared service, which uses `Pipeline.convert`
+and `Pipeline.chunk`, then `Pipeline.ingest_metadata` and `Pipeline.ingest_chunks`
+to persist metadata, chunks, native embeddings, and page numbers in one Azure SQL
+transaction.
 
 Its guide covers infrastructure, authentication, deployment, requests, and
 local HTTP debugging. Bicep templates and a PowerShell deployment script are
@@ -1048,11 +1062,15 @@ required to install the library or run the unit tests.
 
 ## Tests
 
-Pipeline and storage tests exercise both contracts, optional roles, ingestion
-write ordering, all four backend combinations through ingestion, SDK
-serialization, SQL compilation, native vector parameter processing, and failure
-handling without service credentials. They do not connect to a live Azure SQL
-database or Search service.
+Pipeline and storage tests cover processing, independent persistence roles,
+mapping, SDK serialization, SQL compilation, native vector parameter processing,
+and failure handling without service credentials. They do not connect to a live
+Azure SQL database or Search service.
+
+> [!WARNING]
+> Some pipeline and backend-combination tests still call the removed combined
+> ingestion method and currently fail with `AttributeError`. Those tests need
+> migration to explicit processing and persistence calls.
 
 ```powershell
 uv run python -m unittest discover -s tests -v
